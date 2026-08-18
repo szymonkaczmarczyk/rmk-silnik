@@ -1,0 +1,3 @@
+client_secret.json
+*.apps.googleusercontent.com.json
+__pycache__/
