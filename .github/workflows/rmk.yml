@@ -2,11 +2,8 @@ name: RMK – przeliczanie faktur
 
 on:
   schedule:
-    - cron: "*/15 * * * *"      # co 15 minut
-  workflow_dispatch:            # ręczne uruchomienie z zakładki Actions
-
-# Uwaga: publiczne repo = nielimitowane minuty. Faktury NIE trafiają tutaj —
-# leżą tylko na Google Drive, silnik czyta je przez konto serwisowe.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
 
 concurrency:
   group: rmk-run
@@ -28,6 +25,8 @@ jobs:
 
       - name: Przelicz nowe faktury
         env:
-          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+          OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
           RMK_ROOT_FOLDER_ID: ${{ secrets.RMK_ROOT_FOLDER_ID }}
         run: python rmk_service/drive_sync.py
