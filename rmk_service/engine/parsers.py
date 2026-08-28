@@ -102,33 +102,58 @@ def shift_month(dt, k=1):
 def _norm_digits(s):
     return re.sub(r"\D", "", s)
 
-# ---------- Orange ----------
+PL_MIES_SKROT = {"sty":1,"lut":2,"mar":3,"kwi":4,"maj":5,"cze":6,"lip":7,
+                 "sie":8,"wrz":9,"paź":10,"paz":10,"lis":11,"gru":12}
+
+def d_pl_skrot(s):  # "10 sie 2026"
+    dd, mon, yy = s.split()
+    return date(int(yy), PL_MIES_SKROT[mon.lower()[:3]], int(dd))
+
+def d_dot_flex(s):  # 9.07.2026 lub 10.06.2026
+    dd, mm, yy = s.split("."); return date(int(yy), int(mm), int(dd))
+
+# ---------- Orange (wielookresowy, per numer) ----------
 def parse_orange(path, excluded=None):
     excluded = set(_norm_digits(x) for x in (excluded or []))
+    from collections import defaultdict
     t = _text(path)
     nr = re.search(r"Numer:\s*(\d+)", t)
     dw = re.search(r"Data wystawienia:\s*([0-9]{1,2}\s+\w+\s+\d{4})", t)
     data_wyst = d_pl(dw.group(1))
     okr = re.search(r"Okres rozliczeniowy:\s*(\d{1,2}\.\d{1,2}\.\d{4})\s*-\s*(\d{1,2}\.\d{1,2}\.\d{4})", t)
     p_od = d_dot_flex(okr.group(1)); p_do = d_dot_flex(okr.group(2))
-    # RMK liczymy od okresu abonamentu = nadrukowany okres + 1 miesiąc
-    okres_od, okres_do = shift_month(p_od, 1), shift_month(p_do, 1)
     total = re.search(r"Usługi mobilne Orange\s+([\d \xa0]+,\d{2})", t)
     netto_total = round(num(total.group(1)), 2)
-    # numery wyłączone: linia podsumowania "<numer> <netto> <brutto>"
-    wyl = []
-    for m in re.finditer(r"(?m)^\s*(\d{9,11})\s+(-?[\d \xa0]+,\d{2})\s+(-?[\d \xa0]+,\d{2})\s*$", t):
-        if _norm_digits(m.group(1)) in excluded:
-            wyl.append({"numer": m.group(1), "netto": round(num(m.group(2)), 2)})
-    excl_sum = round(sum(w["netto"] for w in wyl), 2)
-    return {"wystawca":"Orange","nr_faktury":nr.group(1) if nr else None,
-            "data_wystawienia":data_wyst,"okres_od":okres_od,"okres_do":okres_do,
-            "netto":round(netto_total - excl_sum, 2),   # baza do podziału
-            "netto_total":netto_total,"wylaczone":wyl,"excl_sum":excl_sum,
-            "uwagi":"okres = nadrukowany +1 miesiąc; numery wyłączone dodane do miesiąca wystawienia"}
 
-def d_dot_flex(s):  # 9.07.2026 lub 10.06.2026
-    dd, mm, yy = s.split("."); return date(int(yy), int(mm), int(dd))
+    # netto per numer z linii podsumowania "<numer> <netto> <brutto>" (numer może mieć kilka linii)
+    sumnet = defaultdict(float)
+    for m in re.finditer(r"(?m)^\s*(\d{9,11})\s+(-?[\d \xa0]+,\d{2})\s+(-?[\d \xa0]+,\d{2})\s*$", t):
+        sumnet[_norm_digits(m.group(1))] += num(m.group(2))
+    excl_sum = round(sum(v for k, v in sumnet.items() if k in excluded), 2)
+    wyl_nums = [k for k in sumnet if k in excluded]
+
+    # pozycje z okresem, per blok numeru (pomijając numery wyłączone)
+    parts = re.split(r"Telefon nr:\s*(\d{9,})", t)
+    per_item = re.compile(r"(\d{2}\s+\w{3}\s+20\d\d)\s*-\s*(\d{2}\s+\w{3}\s+20\d\d)\s+\d+\s+\d+%\s+(-?[\d \xa0]+,\d{2})\s+-?[\d \xa0]+,\d{2}")
+    buckets = defaultdict(float)
+    for i in range(1, len(parts), 2):
+        numer = _norm_digits(parts[i]); body = parts[i+1]
+        if numer in excluded:
+            continue
+        for od, do, n in per_item.findall(body):
+            buckets[(d_pl_skrot(od), d_pl_skrot(do))] += num(n)
+    period_total = round(sum(buckets.values()), 2)
+    onetime = round(netto_total - excl_sum - period_total, 2)   # aktywacje/jednorazowe + reszta -> mies. wystawienia
+
+    periods = [{"od": od, "do": do, "netto": round(v, 2)} for (od, do), v in sorted(buckets.items())]
+    return {"wystawca":"Orange","nr_faktury":nr.group(1) if nr else None,
+            "data_wystawienia":data_wyst,"printed_od":p_od,"printed_do":p_do,
+            "okres_od": min(p["od"] for p in periods) if periods else shift_month(p_od,1),
+            "okres_do": max(p["do"] for p in periods) if periods else shift_month(p_do,1),
+            "netto":netto_total, "netto_total":netto_total,
+            "periods":periods, "onetime":onetime,
+            "excl_sum":excl_sum, "wyl_nums":wyl_nums,
+            "uwagi":"wielookresowy; każdy okres osobno; aktywacje+numer wyłączony -> miesiąc wystawienia"}
 
 # ---------- T-Mobile ----------
 def parse_tmobile(path):

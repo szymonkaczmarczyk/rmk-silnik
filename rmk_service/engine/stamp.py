@@ -27,15 +27,22 @@ def _txt(page, pos, s, font, size, color):
     tw.write_text(page, color=color)
 
 def _obstacles(page):
-    """Zbiera bboxy wszystkiego, co zajęte: słowa, obrazy, rysunki."""
+    """Zbiace bboxy zajęte: słowa, obrazy, rysunki. Pomija tła (obiekty ~na całą stronę)."""
+    pa = page.rect.width * page.rect.height
+    def is_bg(r):  # duże tło / pasek na całą szerokość → nie traktuj jako przeszkody
+        if r.width <= 0 or r.height <= 0: return True
+        if (r.width * r.height) > 0.55 * pa: return True
+        if r.width > 0.9 * page.rect.width and r.height > 0.25 * page.rect.height: return True
+        return False
     obs = []
     for w in page.get_text("words"):
         obs.append(pymupdf.Rect(w[:4]))
     for im in page.get_images(full=True):
         for r in page.get_image_rects(im[0]):
-            obs.append(r)
+            if not is_bg(r): obs.append(r)
     for d in page.get_drawings():
-        obs.append(pymupdf.Rect(d["rect"]))
+        r = pymupdf.Rect(d["rect"])
+        if not is_bg(r): obs.append(r)
     return obs
 
 def find_free_rect(page, w, h, pad=6, margin=24, cell=4):
@@ -73,8 +80,9 @@ def _draw_box(page, x, y, lines, freg, fbold, lh=15, fs=11):
     for i,(txt,bold) in enumerate(lines):
         _txt(page,(x, y+i*lh), txt, (fbold if bold else freg), fs, BLUE)
 
-def stamp(in_path, out_path, parsed, rmk, mode="auto"):
-    """mode: 'auto' = inteligentna nakładka na 1. str., a jak brak miejsca -> okładka; 'cover' = zawsze okładka."""
+def stamp(in_path, out_path, parsed, rmk, mode="auto", page_index=0):
+    """mode: 'auto' = inteligentna nakładka na stronie page_index, a jak brak miejsca -> okładka; 'cover' = zawsze okładka.
+    page_index: na której stronie szukać miejsca (0 = pierwsza; np. Plus/PremiumMobile: 1 = druga)."""
     doc = pymupdf.open(in_path)
     freg = pymupdf.Font(fontfile=FONT)
     fbold = pymupdf.Font(fontfile=FONTB)
@@ -82,7 +90,8 @@ def stamp(in_path, out_path, parsed, rmk, mode="auto"):
     lh, fs = 15, 11
     placed = "cover"
     if mode != "cover":
-        page = doc[0]
+        pi = min(page_index, doc.page_count - 1)
+        page = doc[pi]
         box_w = max((fbold if b else freg).text_length(t, fs) for t,b in lines) + 30
         box_h = lh*len(lines) + 30
         spot = find_free_rect(page, box_w, box_h)
@@ -90,7 +99,8 @@ def stamp(in_path, out_path, parsed, rmk, mode="auto"):
             _draw_box(page, spot[0]+12, spot[1]+24, lines, freg, fbold, lh, fs)
             placed = "overlay"
     if placed == "cover":
-        page = doc.new_page(0, width=595, height=842)
+        ins_at = min(page_index, doc.page_count)   # dla Plus/Premium okładka jako 2. strona, nie 1.
+        page = doc.new_page(ins_at, width=595, height=842)
         x = 60
         _txt(page,(x,90), f"Wyliczenie RMK — {parsed['wystawca']}", fbold, 14, BLUE)
         _txt(page,(x,110), f"Faktura {parsed.get('nr_faktury','')}   okres {parsed['okres_od'].strftime('%d.%m.%Y')}–{parsed['okres_do'].strftime('%d.%m.%Y')}", freg, 9, (0.2,0.2,0.2))

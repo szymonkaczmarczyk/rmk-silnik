@@ -2,7 +2,7 @@
 import os, json, functools
 from decimal import Decimal
 from detect import detect_vendor
-from parsers import PARSERS, parse_orange, parse_tmobile
+from parsers import PARSERS, parse_orange, parse_tmobile, shift_month
 from plus_parser import parse_plus
 from rmk_core import split_rmk, q2, ROMAN
 from stamp import stamp, pln
@@ -49,28 +49,55 @@ def _compute_tmobile(p):
     return r, float(sum(rows.values())), target
 
 def _compute_orange(p):
-    """Podział bazy + doliczenie numerów wyłączonych do miesiąca daty wystawienia + wierne linie."""
-    r = split_rmk(p["netto"], p["okres_od"], p["okres_do"])
+    """Wielookresowy: każdy okres dzielony osobno; aktywacje/jednorazowe + numer wyłączony -> miesiąc wystawienia."""
+    monthly = {}
+    blocks = []
+    for per in p["periods"]:
+        rr = split_rmk(per["netto"], per["od"], per["do"])
+        alloc = []
+        for row in rr["rows"]:
+            monthly[row["mies"]] = monthly.get(row["mies"], Decimal("0.00")) + q2(row["kwota"])
+            alloc.append((row["roman"], q2(row["kwota"]), row["dni"], rr["total_days"], row["mies"]))
+        blocks.append((per, alloc))
     wm = p["data_wystawienia"].month
-    excl = q2(p["excl_sum"])
-    rows = {row["mies"]: q2(row["kwota"]) for row in r["rows"]}
-    if excl != 0:
-        rows[wm] = rows.get(wm, Decimal("0.00")) + excl
-    # linie nakładki (wiernie jak odręczny wzór)
-    n_base = pln(p["netto"]); td = r["total_days"]; tot = pln(p["netto_total"])
+    dod = q2(p["onetime"]) + q2(p["excl_sum"])
+    if dod != 0:
+        monthly[wm] = monthly.get(wm, Decimal("0.00")) + dod
+    # Jeśli obejmuje 3+ miesiące: najwcześniejszy miesiąc doklejamy do następnego i go nie rozpisujemy.
+    folded = None
+    ms = sorted(monthly)
+    if len(ms) >= 3:
+        m0, m1 = ms[0], ms[1]
+        monthly[m1] = monthly.get(m1, Decimal("0.00")) + monthly.pop(m0)
+        folded = m0
+    # nakładka
     lines = [("RMK:", True)]
-    if excl != 0:
-        nums = ", ".join(w["numer"] for w in p["wylaczone"])
-        lines.append((f"{tot} − {pln(p['excl_sum'])} (nr {nums}) = {n_base} zł", False))
-    for row in r["rows"]:
-        lines.append((f"{row['roman']}: {n_base} : {td} × {row['dni']} = {pln(row['kwota'])} zł", False))
-    if excl != 0:
-        base_wm = q2(next((row["kwota"] for row in r["rows"] if row["mies"] == wm), Decimal("0")))
-        lines.append((f"{ROMAN[wm]}: {pln(base_wm)} + {pln(p['excl_sum'])} = {pln(rows[wm])} zł", False))
-    lines.append((f"razem: {pln(sum(rows.values()))} zł", True))
+    if q2(p["excl_sum"]) != 0:
+        nums = ", ".join(p["wyl_nums"])
+        baza = q2(p["netto_total"]) - q2(p["excl_sum"])
+        lines.append((f"netto {pln(p['netto_total'])} − {pln(p['excl_sum'])} (nr wyłączony {nums}) = {pln(baza)} do rozdzielenia", False))
+    for per, alloc in blocks:
+        npln = pln(per["netto"])
+        lines.append((f"{_dm(per['od'])}–{_dm(per['do'])} = {npln} zł:", False))
+        touches_folded = folded is not None and any(mies == folded for *_, mies in alloc)
+        if not touches_folded:
+            for roman, kw, dni, td, mies in alloc:
+                if len(alloc) == 1:
+                    lines.append((f"   {roman}: {pln(kw)} zł (cały)", False))
+                else:
+                    lines.append((f"   {roman}: {npln} : {td} × {dni} = {pln(kw)} zł", False))
+    if q2(p["excl_sum"]) != 0:
+        nums = ", ".join(p["wyl_nums"])
+        lines.append((f"nr wyłączony {nums} = {pln(p['excl_sum'])} zł → {ROMAN[wm]}", False))
+    if q2(p["onetime"]) != 0:
+        lines.append((f"jednorazowe/aktywacje = {pln(p['onetime'])} zł → {ROMAN[wm]}", False))
+    podsum = "   ".join(f"{ROMAN[m]}: {pln(v)}" for m, v in sorted(monthly.items()))
+    lines.append((f"Σ  {podsum}", False))
+    lines.append((f"razem: {pln(sum(monthly.values()))} zł", True))
     p["overlay_lines"] = lines
-    r["rows"] = [{"mies": m, "roman": ROMAN[m], "kwota": v, "dni": None} for m, v in sorted(rows.items())]
-    return r, float(sum(rows.values())), p["netto_total"]
+    r = {"rows": [{"mies": m, "roman": ROMAN[m], "kwota": v, "dni": None} for m, v in sorted(monthly.items())],
+         "total_days": None, "netto": q2(p["netto_total"])}
+    return r, float(sum(monthly.values())), p["netto_total"]
 
 def _dm(d):
     return d.strftime("%d.%m")
@@ -127,7 +154,9 @@ def process(in_path, out_dir, mode="auto"):
     base = os.path.splitext(os.path.basename(in_path))[0]
     out_path = os.path.join(out_dir, f"{base}_wyliczone.pdf")
     os.makedirs(out_dir, exist_ok=True)
-    placed = stamp(in_path, out_path, p, r, mode=mode)
+    # Plus i PremiumMobile: nakładka na 2. stronie (str. 1 to podsumowanie/gęsta strona)
+    page_index = 1 if vendor in ("Plus (Polkomtel)", "PremiumMobile") else 0
+    placed = stamp(in_path, out_path, p, r, mode=mode, page_index=page_index)
     return {"ok": True, "vendor": vendor, "parsed": p, "rmk": r,
             "out": out_path, "placed": placed, "suma": round(suma, 2),
             "checksum_ok": abs(suma - check_target) < 0.005}

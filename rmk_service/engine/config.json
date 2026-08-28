@@ -1,11 +1,14 @@
 {
-  "orange_numery_wylaczone": ["534727825"],
+  "orange_numery_wylaczone": [
+    "534727825"
+  ],
   "_opis": "Numery wyłączane z podziału RMK (Orange). Netto numeru odejmujemy przed podziałem i dodajemy w całości do miesiąca daty wystawienia. Dopasowanie ignoruje spacje/myślniki.",
   "spolki_nip": {
     "7010489213": "Faktury Confronter",
     "6312677767": "Faktury KSNBIZ",
     "6312669532": "Faktury TimeTo",
-    "6312656535": "Faktury INVESTI-GATE"
+    "6312656535": "Faktury INVESTI-GATE",
+    "9691513556": "Faktury Spin Design"
   },
   "_opis_spolki": "Mapowanie NIP nabywcy -> nazwa folderu spółki. Służy do auto-sortowania faktur z folderu wejściowego _Poczta."
 }
