@@ -1,7 +1,5 @@
 {
-  "orange_numery_wylaczone": [
-    "534727825"
-  ],
+  "orange_numery_wylaczone": ["534727825"],
   "_opis": "Numery wyłączane z podziału RMK (Orange). Netto numeru odejmujemy przed podziałem i dodajemy w całości do miesiąca daty wystawienia. Dopasowanie ignoruje spacje/myślniki.",
   "spolki_nip": {
     "7010489213": "Faktury Confronter",

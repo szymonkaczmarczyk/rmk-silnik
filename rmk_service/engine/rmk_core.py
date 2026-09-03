@@ -22,25 +22,27 @@ def month_spans(start: date, end: date):
     return spans
 
 def split_rmk(netto, start: date, end: date):
-    """Dzieli netto na miesiące: netto/dni_okresu * dni_w_miesiacu. Reszta zaokrągleń -> ostatni miesiac."""
+    """Dzieli netto na miesiące dwuetapowo: stawka=q2(netto/dni_okresu), miesiąc=q2(stawka*dni_w_miesiacu).
+    Ostatni miesiąc dopina resztę tak, aby suma == netto co do grosza."""
     netto = Decimal(str(netto))
     spans = month_spans(start, end)
     total_days = sum(d for _,_,d in spans)
-    daily = netto / Decimal(total_days)
+    stawka = q2(netto / Decimal(total_days))   # dzienna stawka, 2 miejsca
     rows = []
     running = Decimal("0.00")
     for i,(y,m,d) in enumerate(spans):
         if i < len(spans)-1:
-            amt = q2(daily * d)
+            amt = q2(stawka * d)
         else:
             amt = q2(netto) - running   # ostatni = reszta, suma == netto
         running += amt
-        rows.append({"rok":y, "mies":m, "roman":ROMAN[m], "dni":d, "kwota":amt})
-    return {"netto":q2(netto), "total_days":total_days, "rows":rows}
+        rows.append({"rok":y, "mies":m, "roman":ROMAN[m], "dni":d, "kwota":amt, "stawka":stawka})
+    return {"netto":q2(netto), "total_days":total_days, "stawka":stawka, "rows":rows}
 
 if __name__ == "__main__":
     # test wg wzorca Plus: 180,00 za okres 25.07-24.08
     r = split_rmk("180.00", date(2026,7,25), date(2026,8,24))
+    print(f"{r['netto']} : {r['total_days']} = {r['stawka']}")
     for row in r["rows"]:
-        print(f"{row['roman']}: {r['netto']} : {r['total_days']} x {row['dni']} = {row['kwota']}")
+        print(f"{row['roman']}: {r['stawka']} x {row['dni']} = {row['kwota']}")
     print("suma:", sum(x['kwota'] for x in r['rows']))

@@ -14,9 +14,10 @@ def build_lines(parsed, rmk):
     if parsed.get("overlay_lines"):
         return parsed["overlay_lines"]
     lines = [("RMK:", True)]
-    n = pln(rmk["netto"]); td = rmk["total_days"]
+    n = pln(rmk["netto"]); td = rmk["total_days"]; st = pln(rmk["stawka"])
+    lines.append((f"{n} : {td} = {st} zł", False))
     for row in rmk["rows"]:
-        lines.append((f"{row['roman']}: {n} : {td} × {row['dni']} = {pln(row['kwota'])} zł", False))
+        lines.append((f"{row['roman']}: {st} × {row['dni']} = {pln(row['kwota'])} zł", True))
     suma = pln(sum(r["kwota"] for r in rmk["rows"]))
     lines.append((f"razem: {suma} zł", True))
     return lines
@@ -26,8 +27,9 @@ def _txt(page, pos, s, font, size, color):
     tw.append(pos, s, font=font, fontsize=size)
     tw.write_text(page, color=color)
 
-def _obstacles(page):
-    """Zbiace bboxy zajęte: słowa, obrazy, rysunki. Pomija tła (obiekty ~na całą stronę)."""
+def _obstacles(page, words_only=False):
+    """Zbiace bboxy zajęte: słowa, obrazy, rysunki. Pomija tła (obiekty ~na całą stronę).
+    words_only=True: tylko słowa (do wymuszonego umieszczenia – może nachodzić na druczek)."""
     pa = page.rect.width * page.rect.height
     def is_bg(r):  # duże tło / pasek na całą szerokość → nie traktuj jako przeszkody
         if r.width <= 0 or r.height <= 0: return True
@@ -37,6 +39,8 @@ def _obstacles(page):
     obs = []
     for w in page.get_text("words"):
         obs.append(pymupdf.Rect(w[:4]))
+    if words_only:
+        return obs
     for im in page.get_images(full=True):
         for r in page.get_image_rects(im[0]):
             if not is_bg(r): obs.append(r)
@@ -45,14 +49,14 @@ def _obstacles(page):
         if not is_bg(r): obs.append(r)
     return obs
 
-def find_free_rect(page, w, h, pad=6, margin=24, cell=4):
+def find_free_rect(page, w, h, pad=6, margin=24, cell=4, words_only=False):
     """Znajduje wolny prostokąt w×h (pt) najdalej od zajętych obszarów. None jeśli brak."""
     import numpy as np
     from scipy import ndimage
     W, H = page.rect.width, page.rect.height
     gw, gh = int(np.ceil(W/cell)), int(np.ceil(H/cell))
     occ = np.zeros((gh, gw), dtype=np.uint8)
-    for r in _obstacles(page):
+    for r in _obstacles(page, words_only=words_only):
         x0=max(0,int((r.x0-pad)//cell)); y0=max(0,int((r.y0-pad)//cell))
         x1=min(gw,int((r.x1+pad)//cell)+1); y1=min(gh,int((r.y1+pad)//cell)+1)
         if x1>x0 and y1>y0: occ[y0:y1, x0:x1]=1
@@ -80,9 +84,10 @@ def _draw_box(page, x, y, lines, freg, fbold, lh=15, fs=11):
     for i,(txt,bold) in enumerate(lines):
         _txt(page,(x, y+i*lh), txt, (fbold if bold else freg), fs, BLUE)
 
-def stamp(in_path, out_path, parsed, rmk, mode="auto", page_index=0):
+def stamp(in_path, out_path, parsed, rmk, mode="auto", page_index=0, force_page=False):
     """mode: 'auto' = inteligentna nakładka na stronie page_index, a jak brak miejsca -> okładka; 'cover' = zawsze okładka.
-    page_index: na której stronie szukać miejsca (0 = pierwsza; np. Plus/PremiumMobile: 1 = druga)."""
+    page_index: na której stronie szukać miejsca (0 = pierwsza; np. Plus/PremiumMobile: 1 = druga).
+    force_page: wymuś nakładkę na tej stronie (może delikatnie nachodzić na druczek) zamiast okładki."""
     doc = pymupdf.open(in_path)
     freg = pymupdf.Font(fontfile=FONT)
     fbold = pymupdf.Font(fontfile=FONTB)
@@ -95,6 +100,12 @@ def stamp(in_path, out_path, parsed, rmk, mode="auto", page_index=0):
         box_w = max((fbold if b else freg).text_length(t, fs) for t,b in lines) + 30
         box_h = lh*len(lines) + 30
         spot = find_free_rect(page, box_w, box_h)
+        if not spot and force_page:
+            # 1) rozluźnij: pomiń rysunki/obrazy (druczek), unikaj tylko słów
+            spot = find_free_rect(page, box_w, box_h, pad=4, margin=14, words_only=True)
+        if not spot and force_page:
+            # 2) ostatecznie: stały narożnik u góry strony (nad druczkiem)
+            spot = (page.rect.width - box_w - 20, 40)
         if spot:
             _draw_box(page, spot[0]+12, spot[1]+24, lines, freg, fbold, lh, fs)
             placed = "overlay"
