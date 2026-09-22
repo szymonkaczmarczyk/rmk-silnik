@@ -28,7 +28,7 @@ def _compute_tmobile(p):
     if dodatek != 0:
         rows[first_m] = rows.get(first_m, Decimal("0.00")) + dodatek
     # linie nakładki
-    n = pln(p["netto"]); td = r["total_days"]; st = pln(r["stawka"])
+    n = pln(p["netto"]); td = r["total_days"]
     lines = [("RMK:", True)]
     kor = q2(p["korzystanie"])
     if kor != 0 and p.get("kor_okres"):
@@ -37,12 +37,11 @@ def _compute_tmobile(p):
     if reszta != 0:
         lines.append((f"z poprz. okresu = {pln(reszta)} zł → {ROMAN[first_m]}", False))
     lines.append((f"{_dm(p['okres_od'])}–{_dm(p['okres_do'])} = {n} zł (abonament)", False))
-    lines.append((f"{n} : {td} = {st} zł", False))
     for row in r["rows"]:
-        lines.append((f"{row['roman']}: {st} × {row['dni']} = {pln(row['kwota'])} zł", True))
+        lines.append((f"{row['roman']}: {n} : {td} × {row['dni']} = {pln(row['kwota'])} zł", False))
     if dodatek != 0:
         base_first = q2(r["rows"][0]["kwota"])
-        lines.append((f"{ROMAN[first_m]}: {pln(base_first)} + {pln(dodatek)} = {pln(rows[first_m])} zł", True))
+        lines.append((f"{ROMAN[first_m]}: {pln(base_first)} + {pln(dodatek)} = {pln(rows[first_m])} zł", False))
     lines.append((f"razem: {pln(sum(rows.values()))} zł", True))
     p["overlay_lines"] = lines
     r["rows"] = [{"mies": m, "roman": ROMAN[m], "kwota": v, "dni": None} for m, v in sorted(rows.items())]
@@ -58,7 +57,7 @@ def _compute_orange(p):
         alloc = []
         for row in rr["rows"]:
             monthly[row["mies"]] = monthly.get(row["mies"], Decimal("0.00")) + q2(row["kwota"])
-            alloc.append((row["roman"], q2(row["kwota"]), row["dni"], rr["total_days"], row["mies"], rr["stawka"]))
+            alloc.append((row["roman"], q2(row["kwota"]), row["dni"], rr["total_days"], row["mies"]))
         blocks.append((per, alloc))
     wm = p["data_wystawienia"].month
     dod = q2(p["onetime"]) + q2(p["excl_sum"])
@@ -78,18 +77,15 @@ def _compute_orange(p):
         baza = q2(p["netto_total"]) - q2(p["excl_sum"])
         lines.append((f"netto {pln(p['netto_total'])} − {pln(p['excl_sum'])} (nr wyłączony {nums}) = {pln(baza)} do rozdzielenia", False))
     for per, alloc in blocks:
-        npln = pln(per["netto"]); td = alloc[0][3]; st = pln(alloc[0][5])
-        touches_folded = folded is not None and any(mies == folded for _,_,_,_,mies,_ in alloc)
-        if not touches_folded and len(alloc) > 1:
-            lines.append((f"{_dm(per['od'])}–{_dm(per['do'])} = {npln} zł  ({npln} : {td} = {st}):", False))
-        else:
-            lines.append((f"{_dm(per['od'])}–{_dm(per['do'])} = {npln} zł:", False))
+        npln = pln(per["netto"])
+        lines.append((f"{_dm(per['od'])}–{_dm(per['do'])} = {npln} zł:", False))
+        touches_folded = folded is not None and any(mies == folded for *_, mies in alloc)
         if not touches_folded:
-            for roman, kw, dni, td, mies, stw in alloc:
+            for roman, kw, dni, td, mies in alloc:
                 if len(alloc) == 1:
-                    lines.append((f"   {roman}: {pln(kw)} zł (cały)", True))
+                    lines.append((f"   {roman}: {pln(kw)} zł (cały)", False))
                 else:
-                    lines.append((f"   {roman}: {st} × {dni} = {pln(kw)} zł", True))
+                    lines.append((f"   {roman}: {npln} : {td} × {dni} = {pln(kw)} zł", False))
     if q2(p["excl_sum"]) != 0:
         nums = ", ".join(p["wyl_nums"])
         lines.append((f"nr wyłączony {nums} = {pln(p['excl_sum'])} zł → {ROMAN[wm]}", False))
@@ -103,9 +99,6 @@ def _compute_orange(p):
          "total_days": None, "netto": q2(p["netto_total"])}
     return r, float(sum(monthly.values())), p["netto_total"]
 
-def _dm(d):
-    return d.strftime("%d.%m")
-
 def _compute_plus(p):
     """Dzieli KAŻDY okres osobno i sumuje po miesiącach. Nakładka pokazuje rozbicie na okresy."""
     monthly = {}
@@ -115,24 +108,23 @@ def _compute_plus(p):
         alloc = []
         for row in rr["rows"]:
             monthly[row["mies"]] = monthly.get(row["mies"], Decimal("0.00")) + q2(row["kwota"])
-            alloc.append((row["roman"], q2(row["kwota"]), row["dni"], rr["total_days"], rr["stawka"]))
+            alloc.append((row["roman"], q2(row["kwota"]), row["dni"], rr["total_days"]))
         blocks.append((per, alloc))
     lines = [("RMK:", True)]
     if len(p["periods"]) == 1:
         per, alloc = blocks[0]
-        n = pln(per["netto"]); td = alloc[0][3]; st = pln(alloc[0][4])
-        lines.append((f"{n} : {td} = {st} zł", False))
-        for roman, kw, dni, _, _ in alloc:
-            lines.append((f"{roman}: {st} × {dni} = {pln(kw)} zł", True))
+        n = pln(per["netto"]); td = alloc[0][3]
+        for roman, kw, dni, _ in alloc:
+            lines.append((f"{roman}: {n} : {td} × {dni} = {pln(kw)} zł", False))
     else:
         for per, alloc in blocks:
-            npln = pln(per["netto"]); td = alloc[0][3]; st = pln(alloc[0][4])
-            lines.append((f"{_dm(per['od'])}–{_dm(per['do'])} = {npln} zł  ({npln} : {td} = {st}):", False))
-            for roman, kw, dni, _, _ in alloc:
+            npln = pln(per["netto"])
+            lines.append((f"{_dm(per['od'])}–{_dm(per['do'])} = {npln} zł:", False))
+            for roman, kw, dni, td in alloc:
                 if len(alloc) == 1:
-                    lines.append((f"   {roman}: {pln(kw)} zł (cały)", True))
+                    lines.append((f"   {roman}: {pln(kw)} zł (cały)", False))
                 else:
-                    lines.append((f"   {roman}: {st} × {dni} = {pln(kw)} zł", True))
+                    lines.append((f"   {roman}: {npln} : {td} × {dni} = {pln(kw)} zł", False))
         podsum = "   ".join(f"{ROMAN[m]}: {pln(v)}" for m, v in sorted(monthly.items()))
         lines.append((f"Σ  {podsum}", False))
     lines.append((f"razem: {pln(sum(monthly.values()))} zł", True))

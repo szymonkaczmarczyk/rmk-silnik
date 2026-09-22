@@ -14,10 +14,9 @@ def build_lines(parsed, rmk):
     if parsed.get("overlay_lines"):
         return parsed["overlay_lines"]
     lines = [("RMK:", True)]
-    n = pln(rmk["netto"]); td = rmk["total_days"]; st = pln(rmk["stawka"])
-    lines.append((f"{n} : {td} = {st} zł", False))
+    n = pln(rmk["netto"]); td = rmk["total_days"]
     for row in rmk["rows"]:
-        lines.append((f"{row['roman']}: {st} × {row['dni']} = {pln(row['kwota'])} zł", True))
+        lines.append((f"{row['roman']}: {n} : {td} × {row['dni']} = {pln(row['kwota'])} zł", False))
     suma = pln(sum(r["kwota"] for r in rmk["rows"]))
     lines.append((f"razem: {suma} zł", True))
     return lines
