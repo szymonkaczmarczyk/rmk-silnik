@@ -1,4 +1,4 @@
-# RMK – automatyczne wyliczanie RMK z faktur telekom (Etap 2)
+# RMK – automatyczne wyliczanie RMK z faktur telekom
 
 Silnik (Plus, Play, PremiumMobile, Integra, Orange, T-Mobile) + automatyka Drive/Gmail.
 Wdrożenie krok-po-kroku: patrz **SETUP.md**.
