@@ -1,25 +1,7 @@
-"""RMK Drive sync — polluje folder 'Bazowe' na Google Drive, liczy RMK i odkłada do 'Wyliczone'.
-Uruchamiany cyklicznie przez GitHub Actions. Autoryzacja: konto serwisowe (bez karty, Drive API).
-
-Idempotentny: dla pliku Bazowe/<ścieżka>/<nazwa>.pdf tworzy Wyliczone/<ścieżka>/<nazwa>_wyliczone.pdf.
-Jeśli wynik już istnieje (i źródło się nie zmieniło) — pomija.
-
-Obsługuje wiele spółek: znajduje KAŻDY folder o nazwie 'Bazowe' pod korzeniem RMK
-i odkłada wyniki do sąsiedniego 'Wyliczone' (tworzy go, jeśli brak), zachowując podfoldery
-(np. miesiące). Struktura: RMK/Faktury <Spółka>/Bazowe/<2026-08>/  →  .../Wyliczone/<2026-08>/.
-
-Autoryzacja: OAuth jako dedykowany Gmail (refresh token) — pliki należą do konta użytkownika
-(normalne 15 GB), więc działa na zwykłym Gmailu. Konto serwisowe NIE działa (brak limitu miejsca).
-
-ENV:
-  OAUTH_CLIENT_ID       – Client ID z OAuth clienta (typ Desktop)
-  OAUTH_CLIENT_SECRET   – Client Secret
-  OAUTH_REFRESH_TOKEN   – refresh token (z get_refresh_token.py, uruchom raz lokalnie)
-  RMK_ROOT_FOLDER_ID    – ID folderu 'RMK' (korzeń, w którym są foldery spółek)
-"""
-import os, io, json, sys, tempfile, traceback
+import os, io, json, sys, time, socket, ssl, tempfile, traceback
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
@@ -31,6 +13,37 @@ _ENGINE_CFG = json.load(open(os.path.join(os.path.dirname(__file__), "engine", "
 NIP_MAP = _ENGINE_CFG.get("spolki_nip", {})
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
+
+# ── Odporność na chwilowe błędy Google ──────────────────────────────────────
+RETRY_STATUS = {429, 500, 502, 503, 504}
+
+def _status_of(e):
+    s = getattr(e, "status_code", None)
+    if s is None and getattr(e, "resp", None) is not None:
+        s = getattr(e.resp, "status", None)
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return None
+
+def execute_with_retry(request, tries=6, base=1.5, opis=""):
+    """Wykonuje request.execute() z ponawianiem przy chwilowych błędach Google."""
+    for i in range(tries):
+        try:
+            return request.execute()
+        except HttpError as e:
+            st = _status_of(e)
+            if st in RETRY_STATUS and i < tries - 1:
+                czekaj = base * (2 ** i)
+                print(f"[retry {i+1}/{tries}] Drive {st} {opis} — czekam {czekaj:.0f}s")
+                time.sleep(czekaj); continue
+            raise
+        except (socket.error, ssl.SSLError, ConnectionError, TimeoutError, OSError) as e:
+            if i < tries - 1:
+                czekaj = base * (2 ** i)
+                print(f"[retry {i+1}/{tries}] połączenie {opis} ({type(e).__name__}) — czekam {czekaj:.0f}s")
+                time.sleep(czekaj); continue
+            raise
 
 def svc():
     creds = Credentials(
@@ -49,15 +62,16 @@ def list_children(drive, folder_id, mime=None):
     if mime: q += f" and mimeType='{mime}'"
     out, tok = [], None
     while True:
-        r = drive.files().list(q=q, fields="nextPageToken, files(id,name,mimeType,modifiedTime)",
-                               pageToken=tok, pageSize=1000).execute()
+        r = execute_with_retry(
+            drive.files().list(q=q, fields="nextPageToken, files(id,name,mimeType,modifiedTime)",
+                               pageToken=tok, pageSize=1000),
+            opis="list")
         out += r.get("files", [])
         tok = r.get("nextPageToken")
         if not tok: break
     return out
 
 def walk_pdfs(drive, folder_id, rel=""):
-    """Rekurencyjnie: (plik_pdf, ścieżka_względna_folderu)."""
     for f in list_children(drive, folder_id):
         if f["mimeType"] == "application/vnd.google-apps.folder":
             yield from walk_pdfs(drive, f["id"], os.path.join(rel, f["name"]))
@@ -65,7 +79,6 @@ def walk_pdfs(drive, folder_id, rel=""):
             yield f, rel
 
 def ensure_path(drive, root_id, rel):
-    """Tworzy (lub znajduje) podfoldery rel pod root_id, zwraca ID najgłębszego."""
     cur = root_id
     for part in [p for p in rel.split(os.sep) if p]:
         found = [c for c in list_children(drive, cur,
@@ -74,7 +87,7 @@ def ensure_path(drive, root_id, rel):
             cur = found[0]["id"]
         else:
             meta = {"name": part, "mimeType": "application/vnd.google-apps.folder", "parents": [cur]}
-            cur = drive.files().create(body=meta, fields="id").execute()["id"]
+            cur = execute_with_retry(drive.files().create(body=meta, fields="id"), opis="mkdir")["id"]
     return cur
 
 def download(drive, file_id, dest):
@@ -83,15 +96,25 @@ def download(drive, file_id, dest):
         dl = MediaIoBaseDownload(fh, req)
         done = False
         while not done:
-            _, done = dl.next_chunk()
+            for i in range(6):
+                try:
+                    _, done = dl.next_chunk()
+                    break
+                except HttpError as e:
+                    if _status_of(e) in RETRY_STATUS and i < 5:
+                        time.sleep(1.5 * (2 ** i)); continue
+                    raise
+                except (socket.error, ssl.SSLError, ConnectionError, TimeoutError, OSError):
+                    if i < 5:
+                        time.sleep(1.5 * (2 ** i)); continue
+                    raise
 
 def upload(drive, path, name, parent_id):
     media = MediaFileUpload(path, mimetype="application/pdf", resumable=False)
     meta = {"name": name, "parents": [parent_id]}
-    return drive.files().create(body=meta, media_body=media, fields="id").execute()["id"]
+    return execute_with_retry(drive.files().create(body=meta, media_body=media, fields="id"), opis="upload")["id"]
 
 def find_bazowe_pairs(drive, root_id, path=""):
-    """Znajduje pary (bazowe_id, wyliczone_id, etykieta) pod korzeniem RMK."""
     pairs = []
     for f in list_children(drive, root_id, "application/vnd.google-apps.folder"):
         p = os.path.join(path, f["name"])
@@ -99,17 +122,17 @@ def find_bazowe_pairs(drive, root_id, path=""):
             parent = root_id
             sib = [c for c in list_children(drive, parent, "application/vnd.google-apps.folder")
                    if c["name"].lower() == "wyliczone"]
-            wid = sib[0]["id"] if sib else drive.files().create(
+            wid = sib[0]["id"] if sib else execute_with_retry(drive.files().create(
                 body={"name": "Wyliczone", "mimeType": "application/vnd.google-apps.folder",
-                      "parents": [parent]}, fields="id").execute()["id"]
+                      "parents": [parent]}, fields="id"), opis="mkdir")["id"]
             pairs.append((f["id"], wid, path or "RMK"))
         else:
             pairs += find_bazowe_pairs(drive, f["id"], p)
     return pairs
 
 def move_file(drive, file_id, new_parent, old_parent):
-    drive.files().update(fileId=file_id, addParents=new_parent,
-                         removeParents=old_parent, fields="id").execute()
+    execute_with_retry(drive.files().update(fileId=file_id, addParents=new_parent,
+                       removeParents=old_parent, fields="id"), opis="move")
 
 def find_child_folder(drive, parent_id, name):
     hits = [c for c in list_children(drive, parent_id, "application/vnd.google-apps.folder")
@@ -140,11 +163,9 @@ def handle_inbox(drive, root):
                 spolka = ensure_path(drive, root, buyer)
                 bazowe = ensure_path(drive, spolka, os.path.join("Bazowe", month))
                 wyliczone = ensure_path(drive, spolka, os.path.join("Wyliczone", month))
-                # wynik -> Wyliczone/<miesiąc>
                 out_name = f"{os.path.splitext(f['name'])[0]}_wyliczone.pdf"
                 if not [c for c in list_children(drive, wyliczone) if c["name"] == out_name]:
                     upload(drive, res["out"], out_name, wyliczone)
-                # surowiec -> Bazowe/<miesiąc>
                 move_file(drive, f["id"], bazowe, poczta)
                 print(f"[_Poczta] {f['name']} -> {buyer}/{month} ({res['vendor']})")
                 sorted_n += 1
